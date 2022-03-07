@@ -59,42 +59,36 @@
 #include <dynamic_reconfigure/server.h>
 #include <grid_map_2d_mapper/GridMap2DMapperConfig.h>
 
-
 namespace grid_map_2d_mapper
 {
-  typedef tf2_ros::MessageFilter<sensor_msgs::PointCloud2> MessageFilter;
+typedef tf2_ros::MessageFilter<sensor_msgs::PointCloud2> MessageFilter;
 /**
-* Class to process incoming pointclouds into laserscans. Some initial code was pulled from the defunct turtlebot
-* grid_map_2d_mapper implementation.
-*/
-  class GridMap2DMapperNodelet : public nodelet::Nodelet
-  {
-
-  public:
+ * Class to process incoming pointclouds into laserscans. Some initial code was pulled from the defunct turtlebot
+ * grid_map_2d_mapper implementation.
+ */
+class GridMap2DMapperNodelet : public nodelet::Nodelet
+{
+public:
     GridMap2DMapperNodelet();
 
-  private:
+private:
     virtual void onInit();
 
-    bool mapServiceCallback(nav_msgs::GetMap::Request  &req,
-                      nav_msgs::GetMap::Response &res );
-    
-    void cloudCb(const sensor_msgs::PointCloud2ConstPtr &cloud_msg);
-    
-    void failureCb(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
-        tf2_ros::filter_failure_reasons::FilterFailureReason reason);
-    
-    void reconfigureCallback(grid_map_2d_mapper::GridMap2DMapperConfig &config, uint32_t level);
+    bool mapServiceCallback(nav_msgs::GetMap::Request& req, nav_msgs::GetMap::Response& res);
+
+    void cloudCb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg);
+
+    void failureCb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg, tf2_ros::filter_failure_reasons::FilterFailureReason reason);
+
+    void reconfigureCallback(grid_map_2d_mapper::GridMap2DMapperConfig& config, uint32_t level);
 
     void connectCb();
 
     void disconnectCb();
-    
-    void syscommandCallback(const std_msgs::String::ConstPtr& msg);
-    
-    void mapThrottledPubTimer(const ros::TimerEvent &event);
- 
 
+    void syscommandCallback(const std_msgs::String::ConstPtr& msg);
+
+    void mapThrottledPubTimer(const ros::TimerEvent& event);
 
     float probToLogOdds(float prob);
 
@@ -106,11 +100,11 @@ namespace grid_map_2d_mapper
     boost::shared_ptr<tf2_ros::TransformListener> tf2_listener_;
     message_filters::Subscriber<sensor_msgs::PointCloud2> sub_;
     boost::shared_ptr<MessageFilter> message_filter_;
-    
+
     typedef dynamic_reconfigure::Server<grid_map_2d_mapper::GridMap2DMapperConfig> ReconfigureServer;
     boost::shared_ptr<ReconfigureServer> dyn_rec_server_;
     boost::recursive_mutex config_mutex_;
-    
+
     ros::Timer map_throttled_pub_timer_;
 
     // ROS Parameters
@@ -129,21 +123,20 @@ namespace grid_map_2d_mapper
     float min_log_odds_;
     float max_log_odds_;
 
-
     ros::Publisher map_pub_;
     ros::Publisher map_throttled_pub_;
     ros::Publisher grid_map_pub_;
-    
+
     ros::ServiceServer map_service_;
-    
+
     ros::Subscriber syscommand_subscriber_;
 
     laser_geometry::LaserProjection projector_;
     grid_map::GridMap grid_map_;
 
     std::vector<Eigen::Vector3d> end_points_;
-  };
+};
 
-}  // grid_map_2d_mapper
+}  // namespace grid_map_2d_mapper
 
 #endif
