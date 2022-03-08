@@ -1,12 +1,10 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(grid_map_2d_mapper)
 
-set(CMAKE_CXX_FLAGS "-std=c++11 ${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "-std=c++14 ${CMAKE_CXX_FLAGS}")
+set(CMAKE_BUILD_TYPE RelWithDebInfo)
 
-## Find catkin macros and libraries
-## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
-## is used, also find other catkin packages
-find_package(catkin REQUIRED COMPONENTS
+set(PACKAGE_DEPS
   grid_map_ros
   message_filters
   nodelet
@@ -18,17 +16,22 @@ find_package(catkin REQUIRED COMPONENTS
   laser_geometry
   nav_msgs
   dynamic_reconfigure
+  er_nav_interface
 )
+
+## Find catkin macros and libraries
+## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
+## is used, also find other catkin packages
+find_package(catkin REQUIRED COMPONENTS ${PACKAGE_DEPS})
 
 generate_dynamic_reconfigure_options(
   cfg/GridMap2DMapper.cfg
-  #...
 )
 
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES grid_map_2d_mapper
-  CATKIN_DEPENDS roscpp message_filters nodelet sensor_msgs tf2 tf2_ros nav_msgs dynamic_reconfigure
+  CATKIN_DEPENDS ${PACKAGE_DEPS}
 )
 
 include_directories(
@@ -47,23 +50,25 @@ target_link_libraries(grid_map_2d_mapper_node grid_map_2d_mapper ${catkin_LIBRAR
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
   FILES_MATCHING PATTERN "*.h"
-  PATTERN ".svn" EXCLUDE
 )
 
 # Mark executables and/or libraries for installation
-install(TARGETS ${PROJECT_NAME}_node ${PROJECT_NAME}
+install(
+  TARGETS
+    ${PROJECT_NAME}_node
+    ${PROJECT_NAME}
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
 # Mark other files for installation
-install(DIRECTORY 
+install(DIRECTORY
   launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
 
-install(FILES 
+install(FILES
   nodelets.xml
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )

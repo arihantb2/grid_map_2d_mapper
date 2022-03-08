@@ -92,6 +92,9 @@ private:
 
     float probToLogOdds(float prob);
 
+    // Utility functions
+    void processCloud(const sensor_msgs::PointCloud2& cloud, const Eigen::Affine3d& world_to_sensor_tf, const double ref_z = 0.0);
+
     ros::NodeHandle nh_, private_nh_;
     ros::Publisher pub_;
     boost::mutex connect_mutex_;
@@ -115,7 +118,7 @@ private:
     double tolerance_;
     double min_height_, max_height_, angle_min_, angle_max_, angle_increment_, scan_time_, range_min_, range_max_;
     bool use_inf_;
-    double no_mapping_;
+    bool no_mapping_;
 
     float log_odds_free_;
     float log_odds_occ_;

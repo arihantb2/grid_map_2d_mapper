@@ -7,7 +7,7 @@
   <maintainer email="kohlbrecher@sim.tu-darmstadt.de">Stefan Kohlbrecher</maintainer>
 
   <license>BSD</license>
-  
+
   <buildtool_depend>catkin</buildtool_depend>
   <depend>grid_map_ros</depend>
   <depend>message_filters</depend>
@@ -20,6 +20,7 @@
   <depend>tf2_sensor_msgs</depend>
   <depend>laser_geometry</depend>
   <depend>nav_msgs</depend>
+  <depend>er_nav_interface</depend>
 
   <export>
     <nodelet plugin="${prefix}/nodelets.xml"/>
