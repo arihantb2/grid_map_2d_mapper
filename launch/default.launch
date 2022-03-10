@@ -13,5 +13,6 @@
         <param name="use_inf" value="false"/>
         <param name="concurrency_level" value="1"/>
         <param name="target_frame" value="base_link"/>
+        <param name="offline_mapping" value="false"/>
     </node>
 </launch>

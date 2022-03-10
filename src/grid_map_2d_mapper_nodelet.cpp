@@ -55,6 +55,9 @@
 #include <chrono>
 #include <thread>
 
+// TODO: Remove after testing
+// #include <tf2_ros/transform_broadcaster.h>
+
 namespace grid_map_2d_mapper
 {
 GridMap2DMapperNodelet::GridMap2DMapperNodelet()
@@ -88,7 +91,7 @@ void GridMap2DMapperNodelet::onInit()
 
     grid_map_.add("occupancy_log_odds");
     grid_map_.add("occupancy_prob");
-    grid_map_.setGeometry(grid_map::Length(20.0, 20.0), 0.05);
+    grid_map_.setGeometry(grid_map::Length(2.0, 2.0), 0.05);
     grid_map_.setFrameId(map_frame_);
 
     log_odds_free_ = probToLogOdds(0.4);
@@ -107,7 +110,11 @@ void GridMap2DMapperNodelet::onInit()
 
     if (offline_mapping)
     {
+        // tf2_ros::TransformBroadcaster tf_broadcaster;
+
         ros::Publisher final_map_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("final_map", 1, true);
+        // ros::Publisher cloud_pub = private_nh_.advertise<sensor_msgs::PointCloud2>("input_cloud", 10, false);
+        // ros::Publisher tf_cloud_pub = private_nh_.advertise<sensor_msgs::PointCloud2>("transformed_cloud", 10, false);
 
         // Load map from maps folder
         std::string maps_folder = private_nh_.param<std::string>("map_folder", "/home/arihant/.ros/maps");
@@ -119,18 +126,50 @@ void GridMap2DMapperNodelet::onInit()
 
         std::vector<er_nav_interface::map_container::Frame> frames = map_frames.frames();
 
+        Eigen::Affine3f lidar_to_baselink_tf = Eigen::Affine3f::Identity();
+
         const size_t num_frames = frames.size();
         std::cout << "[" << num_frames << "] keyframes to process...\n";
         for (size_t i = 0; i < num_frames; ++i)
         {
-            Eigen::Affine3f world_to_sensor_pose = frames[i].pose;
+            if (i == 0)
+            {
+                lidar_to_baselink_tf = frames[0].pose.inverse();
+            }
+
+            Eigen::Affine3f world_to_lidar_pose = frames[i].pose;
+            Eigen::Affine3f world_to_baselink_pose = world_to_lidar_pose * lidar_to_baselink_tf;
+
+            // geometry_msgs::TransformStamped world_to_baselink = tf2::eigenToTransform(world_to_baselink_pose.cast<double>());
+            // world_to_baselink.header.frame_id = "map";
+            // world_to_baselink.child_frame_id = "base_link";
+            // world_to_baselink.header.stamp = ros::Time::now();
+            // tf_broadcaster.sendTransform(world_to_baselink);
+
+            // geometry_msgs::TransformStamped baselink_to_lidar = tf2::eigenToTransform(lidar_to_baselink_tf.inverse().cast<double>());
+            // baselink_to_lidar.header.frame_id = "base_link";
+            // baselink_to_lidar.child_frame_id = "velodyne_frame";
+            // baselink_to_lidar.header.stamp = ros::Time::now();
+            // tf_broadcaster.sendTransform(baselink_to_lidar);
+
+            // sensor_msgs::PointCloud2 cloud_input;
+            // pcl::toROSMsg(*(frames[i].cloud), cloud_input);
+            // cloud_input.header.stamp = ros::Time::now();
+            // cloud_input.header.frame_id = "velodyne_frame";
+            // cloud_pub.publish(cloud_input);
 
             std::cout << "Processing frame [" << i + 1 << " / " << num_frames << "] ...";
             auto start_time = std::chrono::high_resolution_clock::now();
 
-            sensor_msgs::PointCloud2 cloud_in;
-            pcl::toROSMsg(*(frames[i].cloud), cloud_in);
-            processCloud(cloud_in, world_to_sensor_pose.cast<double>());
+            auto cloud_in_baselink_frame = er_nav_interface::utility::transformPointCloud(*(frames[i].cloud), lidar_to_baselink_tf.inverse());
+
+            sensor_msgs::PointCloud2 transformed_cloud;
+            pcl::toROSMsg(cloud_in_baselink_frame, transformed_cloud);
+            transformed_cloud.header.stamp = ros::Time::now();
+            transformed_cloud.header.frame_id = "base_link";
+            // tf_cloud_pub.publish(transformed_cloud);
+
+            processCloud(transformed_cloud, world_to_baselink_pose.cast<double>());
 
             std::chrono::duration<double, std::milli> time_elapsed = std::chrono::high_resolution_clock::now() - start_time;
             std::cout << " finished in [" << time_elapsed.count() << " ms]\n";
@@ -340,8 +379,9 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
     }
 
     // Iterate through pointcloud
-    for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(cloud_in_baselink_frame, "x"), iter_y(cloud_in_baselink_frame, "y"), iter_z(cloud_in_baselink_frame, "z"); iter_x != iter_x.end();
-         ++iter_x, ++iter_y, ++iter_z)
+    for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(cloud_in_baselink_frame, "x"), iter_y(cloud_in_baselink_frame, "y"),
+         iter_z(cloud_in_baselink_frame, "z");
+         iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z)
     {
         Eigen::Vector3d point(*iter_x, *iter_y, *iter_z);
 
@@ -360,8 +400,7 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
         double range = hypot(point.x(), point.y());
         if (range < range_min_)
         {
-            NODELET_DEBUG("rejected for range %f below minimum value %f. Point: (%f, %f, %f)", range, range_min_, point.x(),
-                          point.y(), point.z());
+            NODELET_DEBUG("rejected for range %f below minimum value %f. Point: (%f, %f, %f)", range, range_min_, point.x(), point.y(), point.z());
             continue;
         }
 
@@ -538,7 +577,7 @@ void GridMap2DMapperNodelet::cloudCb(const sensor_msgs::PointCloud2ConstPtr& clo
     }
 
     // Transform cloud if necessary
-    sensor_msgs::PointCloud2ConstPtr transformed_cloud;
+    sensor_msgs::PointCloud2ConstPtr cloud_in_baselink_frame;
 
     if (target_frame != cloud_msg->header.frame_id)
     {
@@ -547,7 +586,7 @@ void GridMap2DMapperNodelet::cloudCb(const sensor_msgs::PointCloud2ConstPtr& clo
             sensor_msgs::PointCloud2Ptr cloud;
             cloud.reset(new sensor_msgs::PointCloud2);
             tf2_->transform(*cloud_msg, *cloud, target_frame_, ros::Duration(tolerance_));
-            transformed_cloud = cloud;
+            cloud_in_baselink_frame = cloud;
         }
         catch (tf2::TransformException ex)
         {
@@ -557,15 +596,15 @@ void GridMap2DMapperNodelet::cloudCb(const sensor_msgs::PointCloud2ConstPtr& clo
     }
     else
     {
-        transformed_cloud = cloud_msg;
+        cloud_in_baselink_frame = cloud_msg;
     }
 
     ros::Time stamp = cloud_msg->header.stamp;
-    geometry_msgs::TransformStamped to_world_tf;
+    geometry_msgs::TransformStamped world_to_baselink_tf;
 
     try
     {
-        to_world_tf = tf2_->lookupTransform(map_frame_, target_frame, stamp, ros::Duration(1.0));
+        world_to_baselink_tf = tf2_->lookupTransform(map_frame_, target_frame, stamp, ros::Duration(1.0));
     }
     catch (tf2::TransformException& ex)
     {
@@ -573,8 +612,8 @@ void GridMap2DMapperNodelet::cloudCb(const sensor_msgs::PointCloud2ConstPtr& clo
         return;
     }
 
-    Eigen::Affine3d to_world_eigen = tf2::transformToEigen(to_world_tf);
-    processCloud(*transformed_cloud, to_world_eigen);
+    Eigen::Affine3d to_world_eigen = tf2::transformToEigen(world_to_baselink_tf);
+    processCloud(*cloud_in_baselink_frame, to_world_eigen);
 }
 
 float GridMap2DMapperNodelet::probToLogOdds(float prob)
