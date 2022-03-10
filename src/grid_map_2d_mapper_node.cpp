@@ -54,15 +54,25 @@ int main(int argc, char** argv)
     std::string nodelet_name = ros::this_node::getName();
     nodelet.load(nodelet_name, "grid_map_2d_mapper/grid_map_2d_mapper_nodelet", remap, nargv);
 
-    boost::shared_ptr<ros::MultiThreadedSpinner> spinner;
-    if (concurrency_level)
+    bool offline_mapping = private_nh.param<bool>("offline_mapping", false);
+
+    if (!offline_mapping)
     {
-        spinner.reset(new ros::MultiThreadedSpinner(concurrency_level));
+        boost::shared_ptr<ros::MultiThreadedSpinner> spinner;
+        if (concurrency_level)
+        {
+            spinner.reset(new ros::MultiThreadedSpinner(concurrency_level));
+        }
+        else
+        {
+            spinner.reset(new ros::MultiThreadedSpinner());
+        }
+        spinner->spin();
     }
     else
     {
-        spinner.reset(new ros::MultiThreadedSpinner());
+        ros::spin();
     }
-    spinner->spin();
+
     return 0;
 }

@@ -1,10 +1,17 @@
 <?xml version="1.0"?>
 <launch>
     <remap from="/grid_map_nav/input_points" to="/velodyne_points"/>
-    <node name="grid_map_nav" type="grid_map_2d_mapper_node" pkg="grid_map_2d_mapper" output="screen" respawn="true">
-        <param name="min_height" value="0.25"/>
-        <param name="max_height" value="1.0"/>
+
+    <node name="grid_map_nav" type="grid_map_2d_mapper_node" pkg="grid_map_2d_mapper" output="screen">
+        <param name="min_height" value="0.2"/>
+        <param name="max_height" value="1.5"/>
+        <param name="angle_min" value="-3.14"/>
+        <param name="angle_max" value="3.14"/>
+        <param name="angle_increment" value="0.008"/>
         <param name="range_min" value="0.2"/>
+        <param name="range_max" value="100.0"/>
+        <param name="use_inf" value="false"/>
+        <param name="concurrency_level" value="1"/>
         <param name="target_frame" value="base_link"/>
     </node>
 </launch>

@@ -84,8 +84,72 @@ void GridMap2DMapperNodelet::onInit()
     private_nh_.param<int>("concurrency_level", concurrency_level, 1);
     private_nh_.param<bool>("use_inf", use_inf_, true);
 
-    // dyn_rec_server_.reset(new ReconfigureServer(config_mutex_, private_nh_));
-    // dyn_rec_server_->setCallback(boost::bind(&GridMap2DMapperNodelet::reconfigureCallback, this, _1, _2));
+    bool offline_mapping = private_nh_.param<bool>("offline_mapping", false);
+
+    grid_map_.add("occupancy_log_odds");
+    grid_map_.add("occupancy_prob");
+    grid_map_.setGeometry(grid_map::Length(20.0, 20.0), 0.05);
+    grid_map_.setFrameId(map_frame_);
+
+    log_odds_free_ = probToLogOdds(0.4);
+    log_odds_occ_ = probToLogOdds(0.75);
+
+    min_log_odds_ = log_odds_free_ * 20;
+    max_log_odds_ = log_odds_occ_ * 20;
+    ROS_INFO("log odds free: %f log odds occ: %f", log_odds_free_, log_odds_occ_);
+
+    obstacle_scan_pub_ = private_nh_.advertise<sensor_msgs::LaserScan>("obstacle_scan", 10, false);
+    occupancy_map_pub_ = private_nh_.advertise<nav_msgs::OccupancyGrid>("map", 10, false);
+    map_throttled_pub_ = private_nh_.advertise<nav_msgs::OccupancyGrid>("map_throttled", 10, false);
+    grid_map_pub_ = private_nh_.advertise<grid_map_msgs::GridMap>("grid_map", 10, false);
+
+    map_service_ = private_nh_.advertiseService("map", &GridMap2DMapperNodelet::mapServiceCallback, this);
+
+    if (offline_mapping)
+    {
+        ros::Publisher final_map_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("final_map", 1, true);
+
+        // Load map from maps folder
+        std::string maps_folder = private_nh_.param<std::string>("map_folder", "/home/arihant/.ros/maps");
+        std::string map_name = private_nh_.param<std::string>("map_name", "MAP_NAME_NOT_SET");
+        double loop_duration_ms = private_nh_.param<double>("loop_duration_ms", 100.0);
+
+        er_nav_interface::map_io::MapIO map_io(std::make_shared<er_nav_interface::map_io::MapIO::Params>(maps_folder, "exr2", 0.1, 0.1));
+        er_nav_interface::map_container::FrameCollection map_frames = map_io.load(map_name);
+
+        std::vector<er_nav_interface::map_container::Frame> frames = map_frames.frames();
+
+        const size_t num_frames = frames.size();
+        std::cout << "[" << num_frames << "] keyframes to process...\n";
+        for (size_t i = 0; i < num_frames; ++i)
+        {
+            Eigen::Affine3f world_to_sensor_pose = frames[i].pose;
+
+            std::cout << "Processing frame [" << i + 1 << " / " << num_frames << "] ...";
+            auto start_time = std::chrono::high_resolution_clock::now();
+
+            sensor_msgs::PointCloud2 cloud_in;
+            pcl::toROSMsg(*(frames[i].cloud), cloud_in);
+            processCloud(cloud_in, world_to_sensor_pose.cast<double>());
+
+            std::chrono::duration<double, std::milli> time_elapsed = std::chrono::high_resolution_clock::now() - start_time;
+            std::cout << " finished in [" << time_elapsed.count() << " ms]\n";
+
+            if (time_elapsed.count() < loop_duration_ms)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(int(loop_duration_ms - time_elapsed.count())));
+            }
+        }
+
+        nav_msgs::OccupancyGrid occ_prob_grid_msg;
+        grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_prob_grid_msg);
+        final_map_pub.publish(occ_prob_grid_msg);
+
+        return;
+    }
+
+    dyn_rec_server_.reset(new ReconfigureServer(config_mutex_, private_nh_));
+    dyn_rec_server_->setCallback(boost::bind(&GridMap2DMapperNodelet::reconfigureCallback, this, _1, _2));
 
     // Check if explicitly single threaded, otherwise, let nodelet manager dictate thread pool size
     if (concurrency_level == 1)
@@ -108,83 +172,32 @@ void GridMap2DMapperNodelet::onInit()
     }
 
     // if pointcloud target frame specified, we need to filter by transform availability
-    // if (!target_frame_.empty())
-    // {
-    //     tf2_.reset(new tf2_ros::Buffer());
-    //     tf2_listener_.reset(new tf2_ros::TransformListener(*tf2_));
-    //     message_filter_.reset(new MessageFilter(sub_, *tf2_, target_frame_, 20, nh_));
-    //     message_filter_->registerCallback(boost::bind(&GridMap2DMapperNodelet::cloudCb, this, _1));
-    //     message_filter_->registerFailureCallback(boost::bind(&GridMap2DMapperNodelet::failureCb, this, _1, _2));
-    // }
-    // else  // otherwise setup direct subscription
-    // {
-    //     tf2_.reset(new tf2_ros::Buffer());
-    //     tf2_listener_.reset(new tf2_ros::TransformListener(*tf2_));
-    //     sub_.registerCallback(boost::bind(&GridMap2DMapperNodelet::cloudCb, this, _1));
-    // }
-
-    pub_ = private_nh_.advertise<sensor_msgs::LaserScan>("scan", 10, false);
-    map_pub_ = private_nh_.advertise<nav_msgs::OccupancyGrid>("map", 10);
-    map_throttled_pub_ = private_nh_.advertise<nav_msgs::OccupancyGrid>("map_throttled", 10);
-    grid_map_pub_ = private_nh_.advertise<grid_map_msgs::GridMap>("debug_map", 10, false);
-
-    map_service_ = private_nh_.advertiseService("map", &GridMap2DMapperNodelet::mapServiceCallback, this);
-
-    // syscommand_subscriber_ = private_nh_.subscribe("syscommand", 10, &GridMap2DMapperNodelet::syscommandCallback, this);
-    // sub_.subscribe(private_nh_, "input_points", input_queue_size_);
-
-    grid_map_.add("occupancy_log_odds");
-    grid_map_.add("occupancy_prob");
-    grid_map_.setGeometry(grid_map::Length(2.0, 2.0), 0.05);
-    grid_map_.setFrameId(map_frame_);
-
-    log_odds_free_ = probToLogOdds(0.4);
-    log_odds_occ_ = probToLogOdds(0.75);
-
-    min_log_odds_ = log_odds_free_ * 20;
-    max_log_odds_ = log_odds_occ_ * 20;
-    ROS_INFO("log odds free: %f log odds occ: %f", log_odds_free_, log_odds_occ_);
-
-    // Load map from maps folder
-    std::string maps_folder = private_nh_.param<std::string>("map_folder", "/home/arihant/.ros/maps");
-    std::string map_name = private_nh_.param<std::string>("map_name", "MAP_NAME_NOT_SET");
-    double loop_duration_ms = private_nh_.param<double>("loop_duration_ms", 100.0);
-
-    er_nav_interface::map_io::MapIO map_io(std::make_shared<er_nav_interface::map_io::MapIO::Params>(maps_folder, "exr2", 0.1, 0.1));
-    er_nav_interface::map_container::FrameCollection map_frames = map_io.load(map_name);
-
-    auto frame_poses = map_frames.framePoses();
-    auto frame_clouds = map_frames.clouds();
-
-    const size_t num_frames = map_frames.size();
-    std::cout << "[" << num_frames << "] keyframes to process...\n";
-    for (size_t i = 0; i < num_frames; ++i)
+    if (!target_frame_.empty())
     {
-        std::cout << "Processing frame [" << i + 1 << " / " << num_frames << "] ...";
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        sensor_msgs::PointCloud2 cloud_in;
-        pcl::toROSMsg(*(frame_clouds.at(i)), cloud_in);
-        Eigen::Affine3d world_to_bl_tf = er_nav_interface::utility::pclPoseToEigenPose(frame_poses->at(i)).cast<double>();
-        processCloud(cloud_in, world_to_bl_tf);
-
-        std::chrono::duration<double, std::milli> time_elapsed = std::chrono::high_resolution_clock::now() - start_time;
-        std::cout << " finished in [" << time_elapsed.count() << " ms]\n";
-
-        if (time_elapsed.count() < loop_duration_ms)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(int(loop_duration_ms - time_elapsed.count())));
-        }
+        tf2_.reset(new tf2_ros::Buffer());
+        tf2_listener_.reset(new tf2_ros::TransformListener(*tf2_));
+        message_filter_.reset(new MessageFilter(sub_, *tf2_, target_frame_, 20, nh_));
+        message_filter_->registerCallback(boost::bind(&GridMap2DMapperNodelet::cloudCb, this, _1));
+        message_filter_->registerFailureCallback(boost::bind(&GridMap2DMapperNodelet::failureCb, this, _1, _2));
+    }
+    else  // otherwise setup direct subscription
+    {
+        tf2_.reset(new tf2_ros::Buffer());
+        tf2_listener_.reset(new tf2_ros::TransformListener(*tf2_));
+        sub_.registerCallback(boost::bind(&GridMap2DMapperNodelet::cloudCb, this, _1));
     }
 
-    // double map_publish_period = private_nh_.param("map_publish_period", 1.0);
-    // map_throttled_pub_timer_ = nh_.createTimer(ros::Duration(map_publish_period), &GridMap2DMapperNodelet::mapThrottledPubTimer, this);
+    syscommand_subscriber_ = private_nh_.subscribe("syscommand", 10, &GridMap2DMapperNodelet::syscommandCallback, this);
+    sub_.subscribe(private_nh_, "input_points", input_queue_size_);
+
+    double map_publish_period = private_nh_.param("map_publish_period", 1.0);
+    map_throttled_pub_timer_ = nh_.createTimer(ros::Duration(map_publish_period), &GridMap2DMapperNodelet::mapThrottledPubTimer, this);
 }
 
 void GridMap2DMapperNodelet::connectCb()
 {
     boost::mutex::scoped_lock lock(connect_mutex_);
-    if (map_pub_.getNumSubscribers() > 0 && sub_.getSubscriber().getNumPublishers() == 0)
+    if (occupancy_map_pub_.getNumSubscribers() > 0 && sub_.getSubscriber().getNumPublishers() == 0)
     {
         NODELET_INFO("Got a subscriber to map, starting subscriber to pointcloud");
         sub_.subscribe(nh_, "/scan_matched_points2", input_queue_size_);
@@ -194,7 +207,7 @@ void GridMap2DMapperNodelet::connectCb()
 void GridMap2DMapperNodelet::disconnectCb()
 {
     boost::mutex::scoped_lock lock(connect_mutex_);
-    if (map_pub_.getNumSubscribers() == 0)
+    if (occupancy_map_pub_.getNumSubscribers() == 0)
     {
         NODELET_INFO("No subscribers to scan, shutting down subscriber to pointcloud");
         sub_.unsubscribe();
@@ -292,7 +305,7 @@ bool GridMap2DMapperNodelet::mapServiceCallback(nav_msgs::GetMap::Request& req, 
     return true;
 }
 
-void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_msg, const Eigen::Affine3d& world_to_sensor_tf, const double ref_z)
+void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_in_baselink_frame, const Eigen::Affine3d& world_to_baselink_tf)
 {
     /**
      *
@@ -304,12 +317,7 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
     sensor_msgs::LaserScanPtr output;
     output = boost::make_shared<sensor_msgs::LaserScan>();
 
-    output->header = cloud_msg.header;
-    if (!target_frame_.empty())
-    {
-        output->header.frame_id = target_frame_;
-    }
-
+    output->header = cloud_in_baselink_frame.header;
     output->angle_min = angle_min_;
     output->angle_max = angle_max_;
     output->angle_increment = angle_increment_;
@@ -332,29 +340,32 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
     }
 
     // Iterate through pointcloud
-    for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(cloud_msg, "x"), iter_y(cloud_msg, "y"), iter_z(cloud_msg, "z"); iter_x != iter_x.end();
+    for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(cloud_in_baselink_frame, "x"), iter_y(cloud_in_baselink_frame, "y"), iter_z(cloud_in_baselink_frame, "z"); iter_x != iter_x.end();
          ++iter_x, ++iter_y, ++iter_z)
     {
-        if (std::isnan(*iter_x) || std::isnan(*iter_y) || std::isnan(*iter_z))
+        Eigen::Vector3d point(*iter_x, *iter_y, *iter_z);
+
+        if (std::isnan(point.x()) || std::isnan(point.y()) || std::isnan(point.z()))
         {
-            NODELET_DEBUG("rejected for nan in point(%f, %f, %f)\n", *iter_x, *iter_y, *iter_z);
+            NODELET_DEBUG("rejected for nan in point (%f, %f, %f)\n", point.x(), point.y(), point.z());
             continue;
         }
 
-        if (*iter_z > max_height_ || *iter_z < min_height_)
+        if (point.z() > max_height_ || point.z() < min_height_)
         {
-            NODELET_DEBUG("rejected for height %f not in range (%f, %f)\n", *iter_z, min_height_, max_height_);
+            NODELET_DEBUG("rejected for height %f not in range (%f, %f)\n", point.z(), min_height_, max_height_);
             continue;
         }
 
-        double range = hypot(*iter_x, *iter_y);
+        double range = hypot(point.x(), point.y());
         if (range < range_min_)
         {
-            NODELET_DEBUG("rejected for range %f below minimum value %f. Point: (%f, %f, %f)", range, range_min_, *iter_x, *iter_y, *iter_z);
+            NODELET_DEBUG("rejected for range %f below minimum value %f. Point: (%f, %f, %f)", range, range_min_, point.x(),
+                          point.y(), point.z());
             continue;
         }
 
-        double angle = atan2(*iter_y, *iter_x);
+        double angle = atan2(point.y(), point.x());
         if (angle < output->angle_min || angle > output->angle_max)
         {
             NODELET_DEBUG("rejected for angle %f not in range (%f, %f)\n", angle, output->angle_min, output->angle_max);
@@ -369,19 +380,21 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
         }
     }
 
-    if (pub_.getNumSubscribers() > 0)
+    if (obstacle_scan_pub_.getNumSubscribers() > 0)
     {
-        pub_.publish(output);
+        sensor_msgs::LaserScan output_bl = *output;
+        output_bl.header.frame_id = "base_link";
+        obstacle_scan_pub_.publish(output_bl);
     }
-
-    if (no_mapping_)
-        return;
 
     // Cloud reduced contains all cloud points within (min_height, max_height)
     sensor_msgs::PointCloud2 cloud_reduced;
     projector_.projectLaser(*output, cloud_reduced);
 
-    Eigen::Vector3d sensor_frame_world_pos(world_to_sensor_tf.translation());
+    if (no_mapping_)
+        return;
+
+    Eigen::Vector3d sensor_frame_world_pos(world_to_baselink_tf.translation());
 
     /**
      *
@@ -403,18 +416,19 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
     for (sensor_msgs::PointCloud2ConstIterator<float> iter_x(cloud_reduced, "x"), iter_y(cloud_reduced, "y"), iter_z(cloud_reduced, "z");
          iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z)
     {
-        Eigen::Vector3d end_point(world_to_sensor_tf * Eigen::Vector3d(*iter_x, *iter_y, *iter_z));
+        Eigen::Vector3d point_in_baselink_frame(*iter_x, *iter_y, *iter_z);
+        Eigen::Vector3d point_in_world_frame = world_to_baselink_tf * point_in_baselink_frame;
 
-        if (max_coords.x() < end_point.x())
-            max_coords.x() = end_point.x();
-        if (max_coords.y() < end_point.y())
-            max_coords.y() = end_point.y();
-        if (min_coords.x() > end_point.x())
-            min_coords.x() = end_point.x();
-        if (min_coords.y() > end_point.y())
-            min_coords.y() = end_point.y();
+        if (max_coords.x() < point_in_world_frame.x())
+            max_coords.x() = point_in_world_frame.x();
+        if (max_coords.y() < point_in_world_frame.y())
+            max_coords.y() = point_in_world_frame.y();
+        if (min_coords.x() > point_in_world_frame.x())
+            min_coords.x() = point_in_world_frame.x();
+        if (min_coords.y() > point_in_world_frame.y())
+            min_coords.y() = point_in_world_frame.y();
 
-        end_points_.push_back(end_point);
+        end_points_.push_back(point_in_world_frame);
     }
 
     Eigen::Vector2d center((min_coords + max_coords) * 0.5);
@@ -444,21 +458,23 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
 
         if (curr_ray_size > 2)
         {
+            // All points until last point on line are free
             size_t r = 0;
             for (; r < curr_ray_size - 1; ++r)
             {
                 const grid_map::Index& index = curr_ray[r];
 
-                if (grid_data(index(0), index(1)) != grid_data(index(0), index(1)))
+                if (std::isnan(grid_data(index(0), index(1))))
                     grid_data(index(0), index(1)) = 0.0;
 
                 if (min_log_odds_ < grid_data(index(0), index(1)))
                     grid_data(index(0), index(1)) += log_odds_free_;
             }
 
+            // Last point in line is occupied
             const grid_map::Index& index = curr_ray[r];
 
-            if (grid_data(index(0), index(1)) != grid_data(index(0), index(1)))
+            if (std::isnan(grid_data(index(0), index(1))))
                 grid_data(index(0), index(1)) = 0.0;
 
             if (max_log_odds_ > grid_data(index(0), index(1)))
@@ -469,12 +485,11 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
     if (grid_map_pub_.getNumSubscribers() > 0)
     {
         grid_map_msgs::GridMap grid_map_msg;
-
         grid_map::GridMapRosConverter::toMessage(grid_map_, grid_map_msg);
         grid_map_pub_.publish(grid_map_msg);
     }
 
-    if (map_pub_.getNumSubscribers() > 0)
+    if (occupancy_map_pub_.getNumSubscribers() > 0)
     {
         grid_map::Matrix& grid_data_prob = grid_map_["occupancy_prob"];
 
@@ -500,7 +515,7 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
         nav_msgs::OccupancyGrid occ_grid_msg;
 
         grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_grid_msg);
-        map_pub_.publish(occ_grid_msg);
+        occupancy_map_pub_.publish(occ_grid_msg);
     }
 }
 
@@ -554,12 +569,11 @@ void GridMap2DMapperNodelet::cloudCb(const sensor_msgs::PointCloud2ConstPtr& clo
     }
     catch (tf2::TransformException& ex)
     {
-        ROS_WARN("Cannot lookup transform, skipping map update!: %s", ex.what());
+        NODELET_WARN("Cannot lookup transform, skipping map update!: %s", ex.what());
         return;
     }
 
     Eigen::Affine3d to_world_eigen = tf2::transformToEigen(to_world_tf);
-
     processCloud(*transformed_cloud, to_world_eigen);
 }
 

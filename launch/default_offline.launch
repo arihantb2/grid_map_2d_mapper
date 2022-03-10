@@ -1,18 +1,22 @@
 <?xml version="1.0"?>
 <launch>
-    <node name="grid_map_nav" type="grid_map_2d_mapper_node" pkg="grid_map_2d_mapper" output="screen" respawn="true">
-        <param name="min_height" value="-0.2"/>
+    <arg name="map_name" default="exr2-woodside-karratha-loop"/>
+    <arg name="map_folder" default="/home/arihant/data/maps"/>
+
+    <node name="grid_map_nav" type="grid_map_2d_mapper_node" pkg="grid_map_2d_mapper" output="screen">
+        <param name="min_height" value="0.1"/>
         <param name="max_height" value="1.5"/>
         <param name="angle_min" value="-3.14"/>
         <param name="angle_max" value="3.14"/>
         <param name="angle_increment" value="0.008"/>
         <param name="range_min" value="0.2"/>
-        <param name="range_max" value="200.0"/>
-        <param name="use_inf" value="true"/>
+        <param name="range_max" value="500.0"/>
+        <param name="use_inf" value="false"/>
         <param name="concurrency_level" value="1"/>
         <param name="target_frame" value="base_link"/>
-        <param name="map_folder" value="/home/arihant/data/maps"/>
-        <param name="map_name" value="exr2-woodside-karratha-loop"/>
-        <param name="loop_duration_ms" value="100.0"/>
+        <param name="map_folder" value="$(arg map_folder)"/>
+        <param name="map_name" value="$(arg map_name)"/>
+        <param name="loop_duration_ms" value="10.0"/>
+        <param name="offline_mapping" value="true"/>
     </node>
 </launch>

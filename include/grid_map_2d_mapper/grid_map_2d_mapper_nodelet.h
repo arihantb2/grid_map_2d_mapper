@@ -93,10 +93,9 @@ private:
     float probToLogOdds(float prob);
 
     // Utility functions
-    void processCloud(const sensor_msgs::PointCloud2& cloud, const Eigen::Affine3d& world_to_sensor_tf, const double ref_z = 0.0);
+    void processCloud(const sensor_msgs::PointCloud2& cloud_in_baselink_frame, const Eigen::Affine3d& world_to_baselink_tf);
 
     ros::NodeHandle nh_, private_nh_;
-    ros::Publisher pub_;
     boost::mutex connect_mutex_;
 
     boost::shared_ptr<tf2_ros::Buffer> tf2_;
@@ -126,7 +125,8 @@ private:
     float min_log_odds_;
     float max_log_odds_;
 
-    ros::Publisher map_pub_;
+    ros::Publisher obstacle_scan_pub_;
+    ros::Publisher occupancy_map_pub_;
     ros::Publisher map_throttled_pub_;
     ros::Publisher grid_map_pub_;
 
