@@ -92,8 +92,11 @@ private:
 
     float probToLogOdds(float prob);
 
-    // Utility functions
     void processCloud(const sensor_msgs::PointCloud2& cloud_in_baselink_frame, const Eigen::Affine3d& world_to_baselink_tf);
+
+    void addOpZoneBetween(const Eigen::Affine3d& start_pose, const Eigen::Affine3d& end_pose, const double radius, const double step_size);
+    void addOpZoneBetween(const Eigen::Affine3d& start_pose, const Eigen::Affine3d& end_pose, const double radius);
+    void addOpZoneAt(const Eigen::Affine3d& pose, const double radius);
 
     ros::NodeHandle nh_, private_nh_;
     boost::mutex connect_mutex_;
@@ -127,6 +130,7 @@ private:
 
     ros::Publisher obstacle_scan_pub_;
     ros::Publisher occupancy_map_pub_;
+    ros::Publisher operation_zone_pub_;
     ros::Publisher map_throttled_pub_;
     ros::Publisher grid_map_pub_;
 

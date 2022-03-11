@@ -91,6 +91,7 @@ void GridMap2DMapperNodelet::onInit()
 
     grid_map_.add("occupancy_log_odds");
     grid_map_.add("occupancy_prob");
+    grid_map_.add("operation_zone");
     grid_map_.setGeometry(grid_map::Length(2.0, 2.0), 0.05);
     grid_map_.setFrameId(map_frame_);
 
@@ -104,6 +105,7 @@ void GridMap2DMapperNodelet::onInit()
     obstacle_scan_pub_ = private_nh_.advertise<sensor_msgs::LaserScan>("obstacle_scan", 10, false);
     occupancy_map_pub_ = private_nh_.advertise<nav_msgs::OccupancyGrid>("map", 10, false);
     map_throttled_pub_ = private_nh_.advertise<nav_msgs::OccupancyGrid>("map_throttled", 10, false);
+    operation_zone_pub_ = private_nh_.advertise<nav_msgs::OccupancyGrid>("operation_zone_map", 10, false);
     grid_map_pub_ = private_nh_.advertise<grid_map_msgs::GridMap>("grid_map", 10, false);
 
     map_service_ = private_nh_.advertiseService("map", &GridMap2DMapperNodelet::mapServiceCallback, this);
@@ -112,15 +114,19 @@ void GridMap2DMapperNodelet::onInit()
     {
         // tf2_ros::TransformBroadcaster tf_broadcaster;
 
-        ros::Publisher final_map_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("final_map", 1, true);
+        ros::Publisher final_map_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("final_nav_map", 1, true);
+        ros::Publisher final_op_zone_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("final_op_zone_map", 1, true);
         // ros::Publisher cloud_pub = private_nh_.advertise<sensor_msgs::PointCloud2>("input_cloud", 10, false);
         // ros::Publisher tf_cloud_pub = private_nh_.advertise<sensor_msgs::PointCloud2>("transformed_cloud", 10, false);
 
-        // Load map from maps folder
+        // Load ROS params
         std::string maps_folder = private_nh_.param<std::string>("map_folder", "/home/arihant/.ros/maps");
         std::string map_name = private_nh_.param<std::string>("map_name", "MAP_NAME_NOT_SET");
         double loop_duration_ms = private_nh_.param<double>("loop_duration_ms", 100.0);
+        const double radius = private_nh_.param<double>("op_zone_radius_m", 2.0);
+        const double step_size = private_nh_.param<double>("op_zone_step_size_m", 0.2);
 
+        // Load map from maps folder
         er_nav_interface::map_io::MapIO map_io(std::make_shared<er_nav_interface::map_io::MapIO::Params>(maps_folder, "exr2", 0.1, 0.1));
         er_nav_interface::map_container::FrameCollection map_frames = map_io.load(map_name);
 
@@ -134,7 +140,17 @@ void GridMap2DMapperNodelet::onInit()
         {
             if (i == 0)
             {
+                // NOTE: Assumed here that first lidar pose is at base_link = 0 (w.r.t map)
                 lidar_to_baselink_tf = frames[0].pose.inverse();
+            }
+
+            // Add circle op-zone at start_pose
+            addOpZoneAt((frames[i].pose * lidar_to_baselink_tf).cast<double>(), radius);
+
+            if (i < num_frames - 1)
+            {
+                // Add rectangle op-zone between current and next pose
+                addOpZoneBetween((frames[i].pose * lidar_to_baselink_tf).cast<double>(), (frames[i + 1].pose * lidar_to_baselink_tf).cast<double>(), radius);
             }
 
             Eigen::Affine3f world_to_lidar_pose = frames[i].pose;
@@ -178,11 +194,59 @@ void GridMap2DMapperNodelet::onInit()
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(int(loop_duration_ms - time_elapsed.count())));
             }
+
+            if (grid_map_pub_.getNumSubscribers() > 0)
+            {
+                grid_map_msgs::GridMap grid_map_msg;
+                grid_map::GridMapRosConverter::toMessage(grid_map_, grid_map_msg);
+                grid_map_pub_.publish(grid_map_msg);
+            }
+
+            if (operation_zone_pub_.getNumSubscribers() > 0)
+            {
+                nav_msgs::OccupancyGrid occ_grid_msg;
+                grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "operation_zone", 0.0, 1.0, occ_grid_msg);
+                operation_zone_pub_.publish(occ_grid_msg);
+            }
+
+            if (occupancy_map_pub_.getNumSubscribers() > 0)
+            {
+                grid_map::Matrix& grid_data_prob = grid_map_["occupancy_prob"];
+                grid_map::Matrix grid_data_odds = grid_map_["occupancy_log_odds"];
+
+                size_t total_size = grid_data_odds.rows() * grid_data_odds.cols();
+                for (size_t i = 0; i < total_size; ++i)
+                {
+                    const float& cell = grid_data_odds.data()[i];
+
+                    if (cell != cell)
+                    {
+                        grid_data_prob.data()[i] = cell;
+                    }
+                    else if (cell < 0.0)
+                    {
+                        grid_data_prob.data()[i] = 0.0;
+                    }
+                    else
+                    {
+                        grid_data_prob.data()[i] = 1.0;
+                    }
+                }
+
+                nav_msgs::OccupancyGrid occ_grid_msg;
+
+                grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_grid_msg);
+                occupancy_map_pub_.publish(occ_grid_msg);
+            }
         }
 
         nav_msgs::OccupancyGrid occ_prob_grid_msg;
         grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_prob_grid_msg);
         final_map_pub.publish(occ_prob_grid_msg);
+
+        nav_msgs::OccupancyGrid occ_grid_msg;
+        grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "operation_zone", 0.0, 1.0, occ_grid_msg);
+        final_op_zone_pub.publish(occ_grid_msg);
 
         return;
     }
@@ -520,41 +584,102 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
                 grid_data(index(0), index(1)) += log_odds_occ_;
         }
     }
+}
 
-    if (grid_map_pub_.getNumSubscribers() > 0)
+void GridMap2DMapperNodelet::addOpZoneBetween(const Eigen::Affine3d& start_pose, const Eigen::Affine3d& end_pose, const double radius, const double step_size)
+{
+    double distance = (start_pose.inverse() * end_pose).translation().norm();
+
+    std::vector<Eigen::Affine3d> poses;
+    poses.push_back(start_pose);
+
+    double steps = floor(distance / step_size);
+    for (int i = 1; i < steps; ++i)
     {
-        grid_map_msgs::GridMap grid_map_msg;
-        grid_map::GridMapRosConverter::toMessage(grid_map_, grid_map_msg);
-        grid_map_pub_.publish(grid_map_msg);
+        Eigen::Quaterniond rot_start(start_pose.rotation());
+        Eigen::Quaterniond rot_end(end_pose.rotation());
+        Eigen::Affine3d interpolated_pose;
+
+        double alpha = double(i) / double(steps);
+        interpolated_pose.translation() = (1.0 - alpha) * start_pose.translation() + alpha * end_pose.translation();
+        interpolated_pose.linear() = rot_start.slerp(alpha, rot_end).toRotationMatrix();
+
+        poses.push_back(interpolated_pose);
+    }
+    poses.push_back(end_pose);
+
+    const int num_poses = poses.size();
+    for (int i = 0; i < num_poses - 1; ++i)
+    {
+        addOpZoneBetween(poses[i], poses[i + 1], radius);
+    }
+}
+
+void GridMap2DMapperNodelet::addOpZoneBetween(const Eigen::Affine3d& start_pose, const Eigen::Affine3d& end_pose, const double radius)
+{
+    std::vector<grid_map::Position> polygon_vertices;
+    Eigen::Vector2d direction = (end_pose.translation() - start_pose.translation()).block<2, 1>(0, 0).normalized();
+    double angle = std::atan2(direction.y(), direction.x());
+
+    Eigen::Vector2d start_position = start_pose.translation().block<2, 1>(0, 0);
+    Eigen::Vector2d end_position = end_pose.translation().block<2, 1>(0, 0);
+
+    static const Eigen::Rotation2Dd left_rotation_90(M_PI_2);
+    static const Eigen::Rotation2Dd right_rotation_90(-M_PI_2);
+
+    Eigen::Vector2d left_vertex_relative = radius * (left_rotation_90.matrix() * direction);
+    Eigen::Vector2d right_vertex_relative = radius * (right_rotation_90.matrix() * direction);
+
+    // Bottom left vertex
+    polygon_vertices.push_back(start_position + left_vertex_relative);
+
+    // Bottom right vertex
+    polygon_vertices.push_back(start_position + right_vertex_relative);
+
+    // Top right vertex
+    polygon_vertices.push_back(end_position + right_vertex_relative);
+
+    // Top left vertex
+    polygon_vertices.push_back(end_position + left_vertex_relative);
+
+    double min_x, min_y, max_x, max_y;
+    for (const Eigen::Vector2d& vertex : polygon_vertices)
+    {
+        min_x = std::min(min_x, vertex.x());
+        min_y = std::min(min_y, vertex.y());
+        max_x = std::max(max_x, vertex.x());
+        max_y = std::max(max_y, vertex.y());
     }
 
-    if (occupancy_map_pub_.getNumSubscribers() > 0)
+    Eigen::Vector2d center(0.5 * (start_position + end_position));
+    Eigen::Vector2d lengths(max_x - min_x, max_y - min_y);
+
+    grid_map::GridMap update_area;
+    update_area.setGeometry(lengths.array() + 0.5, grid_map_.getResolution(), center);
+    grid_map_.extendToInclude(update_area);
+
+    grid_map::Matrix& operation_zone_map = grid_map_["operation_zone"];
+    for (grid_map::PolygonIterator iterator(grid_map_, grid_map::Polygon(polygon_vertices)); !iterator.isPastEnd(); ++iterator)
     {
-        grid_map::Matrix& grid_data_prob = grid_map_["occupancy_prob"];
+        grid_map::Index index(*iterator);
+        operation_zone_map(index(0), index(1)) = 0.0;
+    }
+}
 
-        size_t total_size = grid_data.rows() * grid_data.cols();
-        for (size_t i = 0; i < total_size; ++i)
-        {
-            const float& cell = grid_data.data()[i];
+void GridMap2DMapperNodelet::addOpZoneAt(const Eigen::Affine3d& pose, const double radius)
+{
+    Eigen::Vector2d center(pose.translation().x(), pose.translation().y());
+    Eigen::Vector2d lengths(2 * radius, 2 * radius);
 
-            if (cell != cell)
-            {
-                grid_data_prob.data()[i] = cell;
-            }
-            else if (cell < 0.0)
-            {
-                grid_data_prob.data()[i] = 0.0;
-            }
-            else
-            {
-                grid_data_prob.data()[i] = 1.0;
-            }
-        }
+    grid_map::GridMap update_area;
+    update_area.setGeometry(lengths.array() + 0.5, grid_map_.getResolution(), center);
+    grid_map_.extendToInclude(update_area);
 
-        nav_msgs::OccupancyGrid occ_grid_msg;
-
-        grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_grid_msg);
-        occupancy_map_pub_.publish(occ_grid_msg);
+    grid_map::Matrix& operation_zone_map = grid_map_["operation_zone"];
+    for (grid_map::CircleIterator iterator(grid_map_, center, radius); !iterator.isPastEnd(); ++iterator)
+    {
+        grid_map::Index index(*iterator);
+        operation_zone_map(index(0), index(1)) = 0.0;
     }
 }
 
@@ -614,6 +739,43 @@ void GridMap2DMapperNodelet::cloudCb(const sensor_msgs::PointCloud2ConstPtr& clo
 
     Eigen::Affine3d to_world_eigen = tf2::transformToEigen(world_to_baselink_tf);
     processCloud(*cloud_in_baselink_frame, to_world_eigen);
+
+    if (grid_map_pub_.getNumSubscribers() > 0)
+    {
+        grid_map_msgs::GridMap grid_map_msg;
+        grid_map::GridMapRosConverter::toMessage(grid_map_, grid_map_msg);
+        grid_map_pub_.publish(grid_map_msg);
+    }
+
+    if (occupancy_map_pub_.getNumSubscribers() > 0)
+    {
+        grid_map::Matrix& grid_data_prob = grid_map_["occupancy_prob"];
+        grid_map::Matrix grid_data = grid_map_["occupancy_log_odds"];
+
+        size_t total_size = grid_data.rows() * grid_data.cols();
+        for (size_t i = 0; i < total_size; ++i)
+        {
+            const float& cell = grid_data.data()[i];
+
+            if (cell != cell)
+            {
+                grid_data_prob.data()[i] = cell;
+            }
+            else if (cell < 0.0)
+            {
+                grid_data_prob.data()[i] = 0.0;
+            }
+            else
+            {
+                grid_data_prob.data()[i] = 1.0;
+            }
+        }
+
+        nav_msgs::OccupancyGrid occ_grid_msg;
+
+        grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_grid_msg);
+        occupancy_map_pub_.publish(occ_grid_msg);
+    }
 }
 
 float GridMap2DMapperNodelet::probToLogOdds(float prob)
