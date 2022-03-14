@@ -69,10 +69,6 @@ int main(int argc, char** argv)
         }
         spinner->spin();
     }
-    else
-    {
-        ros::spin();
-    }
 
     return 0;
 }

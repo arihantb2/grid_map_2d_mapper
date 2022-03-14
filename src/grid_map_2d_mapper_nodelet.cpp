@@ -56,7 +56,7 @@
 #include <thread>
 
 // TODO: Remove after testing
-// #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/transform_broadcaster.h>
 
 namespace grid_map_2d_mapper
 {
@@ -92,6 +92,7 @@ void GridMap2DMapperNodelet::onInit()
     grid_map_.add("occupancy_log_odds");
     grid_map_.add("occupancy_prob");
     grid_map_.add("operation_zone");
+    grid_map_.add("nav_map");
     grid_map_.setGeometry(grid_map::Length(2.0, 2.0), 0.05);
     grid_map_.setFrameId(map_frame_);
 
@@ -112,37 +113,53 @@ void GridMap2DMapperNodelet::onInit()
 
     if (offline_mapping)
     {
-        // tf2_ros::TransformBroadcaster tf_broadcaster;
-
-        ros::Publisher final_map_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("final_nav_map", 1, true);
-        ros::Publisher final_op_zone_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("final_op_zone_map", 1, true);
-        // ros::Publisher cloud_pub = private_nh_.advertise<sensor_msgs::PointCloud2>("input_cloud", 10, false);
-        // ros::Publisher tf_cloud_pub = private_nh_.advertise<sensor_msgs::PointCloud2>("transformed_cloud", 10, false);
-
         // Load ROS params
-        std::string maps_folder = private_nh_.param<std::string>("map_folder", "/home/arihant/.ros/maps");
-        std::string map_name = private_nh_.param<std::string>("map_name", "MAP_NAME_NOT_SET");
-        double loop_duration_ms = private_nh_.param<double>("loop_duration_ms", 100.0);
+        const std::string maps_folder = private_nh_.param<std::string>("map_folder", "/home/arihant/.ros/maps");
+        const std::string map_name = private_nh_.param<std::string>("map_name", "MAP_NAME_NOT_SET");
+        const double loop_duration_ms = private_nh_.param<double>("loop_duration_ms", 100.0);
         const double radius = private_nh_.param<double>("op_zone_radius_m", 2.0);
         const double step_size = private_nh_.param<double>("op_zone_step_size_m", 0.2);
 
+        // Publisher for occupancy grid
+        ros::Publisher offline_map_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("offline/map", 1, true);
+        ros::Publisher offline_op_zone_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("offline/op_zone_map", 1, true);
+        ros::Publisher offline_nav_map_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("offline/nav_map", 1, true);
+
+        // Debug transform and cloud publishers
+        tf2_ros::TransformBroadcaster tf_broadcaster;
+        ros::Publisher cloud_pub = private_nh_.advertise<sensor_msgs::PointCloud2>("debug/input_cloud", 10, false);
+        ros::Publisher tf_cloud_pub = private_nh_.advertise<sensor_msgs::PointCloud2>("debug/transformed_cloud", 10, false);
+
         // Load map from maps folder
         er_nav_interface::map_io::MapIO map_io(std::make_shared<er_nav_interface::map_io::MapIO::Params>(maps_folder, "exr2", 0.1, 0.1));
-        er_nav_interface::map_container::FrameCollection map_frames = map_io.load(map_name);
-
-        std::vector<er_nav_interface::map_container::Frame> frames = map_frames.frames();
+        std::vector<er_nav_interface::map_container::Frame> frames = map_io.load(map_name).frames();
 
         Eigen::Affine3f lidar_to_baselink_tf = Eigen::Affine3f::Identity();
-
         const size_t num_frames = frames.size();
         std::cout << "[" << num_frames << "] keyframes to process...\n";
         for (size_t i = 0; i < num_frames; ++i)
         {
+            std::cout << "Processing frame [" << i + 1 << " / " << num_frames << "] ...";
+            auto start_time = std::chrono::high_resolution_clock::now();
+
             if (i == 0)
             {
                 // NOTE: Assumed here that first lidar pose is at base_link = 0 (w.r.t map)
                 lidar_to_baselink_tf = frames[0].pose.inverse();
             }
+
+            Eigen::Affine3f world_to_lidar_pose = frames[i].pose;
+            Eigen::Affine3f world_to_baselink_pose = world_to_lidar_pose * lidar_to_baselink_tf;
+
+            auto cloud_in_baselink_frame = er_nav_interface::utility::transformPointCloud(*(frames[i].cloud), lidar_to_baselink_tf.inverse());
+
+            sensor_msgs::PointCloud2 transformed_cloud;
+            pcl::toROSMsg(cloud_in_baselink_frame, transformed_cloud);
+
+            processCloud(transformed_cloud, world_to_baselink_pose.cast<double>());
+
+            std::chrono::duration<double, std::milli> time_elapsed_cloud_processing = std::chrono::high_resolution_clock::now() - start_time;
+            std::cout << " finished in [" << time_elapsed_cloud_processing.count() << " ms] ...";
 
             // Add circle op-zone at start_pose
             addOpZoneAt((frames[i].pose * lidar_to_baselink_tf).cast<double>(), radius);
@@ -153,42 +170,33 @@ void GridMap2DMapperNodelet::onInit()
                 addOpZoneBetween((frames[i].pose * lidar_to_baselink_tf).cast<double>(), (frames[i + 1].pose * lidar_to_baselink_tf).cast<double>(), radius);
             }
 
-            Eigen::Affine3f world_to_lidar_pose = frames[i].pose;
-            Eigen::Affine3f world_to_baselink_pose = world_to_lidar_pose * lidar_to_baselink_tf;
-
-            // geometry_msgs::TransformStamped world_to_baselink = tf2::eigenToTransform(world_to_baselink_pose.cast<double>());
-            // world_to_baselink.header.frame_id = "map";
-            // world_to_baselink.child_frame_id = "base_link";
-            // world_to_baselink.header.stamp = ros::Time::now();
-            // tf_broadcaster.sendTransform(world_to_baselink);
-
-            // geometry_msgs::TransformStamped baselink_to_lidar = tf2::eigenToTransform(lidar_to_baselink_tf.inverse().cast<double>());
-            // baselink_to_lidar.header.frame_id = "base_link";
-            // baselink_to_lidar.child_frame_id = "velodyne_frame";
-            // baselink_to_lidar.header.stamp = ros::Time::now();
-            // tf_broadcaster.sendTransform(baselink_to_lidar);
-
-            // sensor_msgs::PointCloud2 cloud_input;
-            // pcl::toROSMsg(*(frames[i].cloud), cloud_input);
-            // cloud_input.header.stamp = ros::Time::now();
-            // cloud_input.header.frame_id = "velodyne_frame";
-            // cloud_pub.publish(cloud_input);
-
-            std::cout << "Processing frame [" << i + 1 << " / " << num_frames << "] ...";
-            auto start_time = std::chrono::high_resolution_clock::now();
-
-            auto cloud_in_baselink_frame = er_nav_interface::utility::transformPointCloud(*(frames[i].cloud), lidar_to_baselink_tf.inverse());
-
-            sensor_msgs::PointCloud2 transformed_cloud;
-            pcl::toROSMsg(cloud_in_baselink_frame, transformed_cloud);
-            transformed_cloud.header.stamp = ros::Time::now();
-            transformed_cloud.header.frame_id = "base_link";
-            // tf_cloud_pub.publish(transformed_cloud);
-
-            processCloud(transformed_cloud, world_to_baselink_pose.cast<double>());
-
             std::chrono::duration<double, std::milli> time_elapsed = std::chrono::high_resolution_clock::now() - start_time;
-            std::cout << " finished in [" << time_elapsed.count() << " ms]\n";
+            std::cout << " added op-zone in [" << (time_elapsed - time_elapsed_cloud_processing).count() << " ms]\n";
+
+            if (tf_cloud_pub.getNumSubscribers() > 0)
+            {
+                geometry_msgs::TransformStamped world_to_baselink = tf2::eigenToTransform(world_to_baselink_pose.cast<double>());
+                world_to_baselink.header.frame_id = "map";
+                world_to_baselink.child_frame_id = "base_link";
+                world_to_baselink.header.stamp = ros::Time::now();
+                tf_broadcaster.sendTransform(world_to_baselink);
+
+                geometry_msgs::TransformStamped baselink_to_lidar = tf2::eigenToTransform(lidar_to_baselink_tf.inverse().cast<double>());
+                baselink_to_lidar.header.frame_id = "base_link";
+                baselink_to_lidar.child_frame_id = "velodyne_frame";
+                baselink_to_lidar.header.stamp = ros::Time::now();
+                tf_broadcaster.sendTransform(baselink_to_lidar);
+
+                sensor_msgs::PointCloud2 cloud_input;
+                pcl::toROSMsg(*(frames[i].cloud), cloud_input);
+                cloud_input.header.stamp = ros::Time::now();
+                cloud_input.header.frame_id = "velodyne_frame";
+                cloud_pub.publish(cloud_input);
+
+                transformed_cloud.header.stamp = ros::Time::now();
+                transformed_cloud.header.frame_id = "base_link";
+                tf_cloud_pub.publish(transformed_cloud);
+            }
 
             if (time_elapsed.count() < loop_duration_ms)
             {
@@ -211,42 +219,102 @@ void GridMap2DMapperNodelet::onInit()
 
             if (occupancy_map_pub_.getNumSubscribers() > 0)
             {
-                grid_map::Matrix& grid_data_prob = grid_map_["occupancy_prob"];
-                grid_map::Matrix grid_data_odds = grid_map_["occupancy_log_odds"];
+                grid_map::Matrix& mutable_prob_grid = grid_map_["occupancy_prob"];
+                const grid_map::Matrix& odds_grid = grid_map_["occupancy_log_odds"];
 
-                size_t total_size = grid_data_odds.rows() * grid_data_odds.cols();
+                size_t total_size = odds_grid.rows() * odds_grid.cols();
                 for (size_t i = 0; i < total_size; ++i)
                 {
-                    const float& cell = grid_data_odds.data()[i];
+                    const float& cell = odds_grid.data()[i];
 
                     if (cell != cell)
                     {
-                        grid_data_prob.data()[i] = cell;
+                        mutable_prob_grid.data()[i] = cell;
                     }
                     else if (cell < 0.0)
                     {
-                        grid_data_prob.data()[i] = 0.0;
+                        mutable_prob_grid.data()[i] = 0.0;
                     }
                     else
                     {
-                        grid_data_prob.data()[i] = 1.0;
+                        mutable_prob_grid.data()[i] = 1.0;
                     }
                 }
 
                 nav_msgs::OccupancyGrid occ_grid_msg;
-
                 grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_grid_msg);
                 occupancy_map_pub_.publish(occ_grid_msg);
             }
         }
 
-        nav_msgs::OccupancyGrid occ_prob_grid_msg;
-        grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_prob_grid_msg);
-        final_map_pub.publish(occ_prob_grid_msg);
+        {
+            grid_map::Matrix& mutable_prob_grid = grid_map_["occupancy_prob"];
+            const grid_map::Matrix& odds_grid = grid_map_["occupancy_log_odds"];
 
-        nav_msgs::OccupancyGrid occ_grid_msg;
-        grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "operation_zone", 0.0, 1.0, occ_grid_msg);
-        final_op_zone_pub.publish(occ_grid_msg);
+            size_t total_size = odds_grid.rows() * odds_grid.cols();
+            for (size_t i = 0; i < total_size; ++i)
+            {
+                const float& cell = odds_grid.data()[i];
+
+                if (cell != cell)
+                {
+                    mutable_prob_grid.data()[i] = cell;
+                }
+                else if (cell < 0.0)
+                {
+                    mutable_prob_grid.data()[i] = 0.0;
+                }
+                else
+                {
+                    mutable_prob_grid.data()[i] = 1.0;
+                }
+            }
+        }
+
+        {
+            // Generate navigation map from occupancy map and operation zone map
+            const grid_map::Matrix& prob_grid = grid_map_["occupancy_prob"];
+            const grid_map::Matrix& op_zone_grid = grid_map_["operation_zone"];
+            grid_map::Matrix& mutable_nav_grid = grid_map_["nav_map"];
+
+            size_t grid_size = prob_grid.rows() * prob_grid.cols();
+            for (size_t i = 0; i < grid_size; ++i)
+            {
+                if (std::isnan(prob_grid.data()[i]))
+                {
+                    mutable_nav_grid.data()[i] = 1.0;
+                    continue;
+                }
+
+                if (std::isnan(op_zone_grid.data()[i]))
+                {
+                    mutable_nav_grid.data()[i] = 1.0;
+                    continue;
+                }
+
+                mutable_nav_grid.data()[i] = 1.0 - (1.0 - prob_grid.data()[i]) * (1.0 - op_zone_grid.data()[i]);
+            }
+        }
+
+        size_t num_subs = offline_map_pub.getNumSubscribers() + offline_nav_map_pub.getNumSubscribers() + offline_op_zone_pub.getNumSubscribers();
+
+        if (num_subs > 0)
+        {
+            nav_msgs::OccupancyGrid occ_prob_grid_msg;
+            grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, occ_prob_grid_msg);
+            occ_prob_grid_msg.header.stamp = ros::Time::now();
+            offline_map_pub.publish(occ_prob_grid_msg);
+
+            nav_msgs::OccupancyGrid occ_op_zone_grid_msg;
+            grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "operation_zone", 0.0, 1.0, occ_op_zone_grid_msg);
+            occ_op_zone_grid_msg.header.stamp = ros::Time::now();
+            offline_op_zone_pub.publish(occ_op_zone_grid_msg);
+
+            nav_msgs::OccupancyGrid occ_nav_grid_msg;
+            grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "nav_map", 0.0, 1.0, occ_nav_grid_msg);
+            occ_nav_grid_msg.header.stamp = ros::Time::now();
+            offline_nav_map_pub.publish(occ_nav_grid_msg);
+        }
 
         return;
     }
@@ -346,26 +414,25 @@ void GridMap2DMapperNodelet::mapThrottledPubTimer(const ros::TimerEvent& event)
 {
     if (map_throttled_pub_.getNumSubscribers() > 0)
     {
-        grid_map::Matrix& grid_data = grid_map_["occupancy_log_odds"];
+        grid_map::Matrix& mutable_prob = grid_map_["occupancy_prob"];
+        const grid_map::Matrix& odds = grid_map_["occupancy_log_odds"];
 
-        grid_map::Matrix& grid_data_prob = grid_map_["occupancy_prob"];
-
-        size_t total_size = grid_data.rows() * grid_data.cols();
+        size_t total_size = odds.rows() * odds.cols();
         for (size_t i = 0; i < total_size; ++i)
         {
-            const float& cell = grid_data.data()[i];
+            const float& cell = odds.data()[i];
 
             if (cell != cell)
             {
-                grid_data_prob.data()[i] = cell;
+                mutable_prob.data()[i] = cell;
             }
             else if (cell < 0.0)
             {
-                grid_data_prob.data()[i] = 0.0;
+                mutable_prob.data()[i] = 0.0;
             }
             else
             {
-                grid_data_prob.data()[i] = 1.0;
+                mutable_prob.data()[i] = 1.0;
             }
         }
 
@@ -380,31 +447,29 @@ bool GridMap2DMapperNodelet::mapServiceCallback(nav_msgs::GetMap::Request& req, 
 {
     ROS_INFO("grid_mapper_2d map service called");
 
-    grid_map::Matrix& grid_data = grid_map_["occupancy_log_odds"];
+    const grid_map::Matrix& odds = grid_map_["occupancy_log_odds"];
+    grid_map::Matrix& mutable_prob = grid_map_["occupancy_prob"];
 
-    grid_map::Matrix& grid_data_prob = grid_map_["occupancy_prob"];
-
-    size_t total_size = grid_data.rows() * grid_data.cols();
+    size_t total_size = odds.rows() * odds.cols();
     for (size_t i = 0; i < total_size; ++i)
     {
-        const float& cell = grid_data.data()[i];
+        const float& cell = odds.data()[i];
 
         if (cell != cell)
         {
-            grid_data_prob.data()[i] = cell;
+            mutable_prob.data()[i] = cell;
         }
         else if (cell < 0.0)
         {
-            grid_data_prob.data()[i] = 0.0;
+            mutable_prob.data()[i] = 0.0;
         }
         else
         {
-            grid_data_prob.data()[i] = 1.0;
+            mutable_prob.data()[i] = 1.0;
         }
     }
 
     grid_map::GridMapRosConverter::toOccupancyGrid(grid_map_, "occupancy_prob", 0.0, 1.0, res.map);
-
     return true;
 }
 
@@ -507,7 +572,7 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
      *
      */
 
-    grid_map::Matrix& grid_data = grid_map_["occupancy_log_odds"];
+    grid_map::Matrix& mutable_odds = grid_map_["occupancy_log_odds"];
 
     grid_map::Position sensor_position(sensor_frame_world_pos.x(), sensor_frame_world_pos.y());
 
@@ -567,21 +632,21 @@ void GridMap2DMapperNodelet::processCloud(const sensor_msgs::PointCloud2& cloud_
             {
                 const grid_map::Index& index = curr_ray[r];
 
-                if (std::isnan(grid_data(index(0), index(1))))
-                    grid_data(index(0), index(1)) = 0.0;
+                if (mutable_odds(index(0), index(1)) != mutable_odds(index(0), index(1)))
+                    mutable_odds(index(0), index(1)) = 0.0;
 
-                if (min_log_odds_ < grid_data(index(0), index(1)))
-                    grid_data(index(0), index(1)) += log_odds_free_;
+                if (min_log_odds_ < mutable_odds(index(0), index(1)))
+                    mutable_odds(index(0), index(1)) += log_odds_free_;
             }
 
             // Last point in line is occupied
             const grid_map::Index& index = curr_ray[r];
 
-            if (std::isnan(grid_data(index(0), index(1))))
-                grid_data(index(0), index(1)) = 0.0;
+            if (mutable_odds(index(0), index(1)) != mutable_odds(index(0), index(1)))
+                mutable_odds(index(0), index(1)) = 0.0;
 
-            if (max_log_odds_ > grid_data(index(0), index(1)))
-                grid_data(index(0), index(1)) += log_odds_occ_;
+            if (max_log_odds_ > mutable_odds(index(0), index(1)))
+                mutable_odds(index(0), index(1)) += log_odds_occ_;
         }
     }
 }
@@ -749,25 +814,25 @@ void GridMap2DMapperNodelet::cloudCb(const sensor_msgs::PointCloud2ConstPtr& clo
 
     if (occupancy_map_pub_.getNumSubscribers() > 0)
     {
-        grid_map::Matrix& grid_data_prob = grid_map_["occupancy_prob"];
-        grid_map::Matrix grid_data = grid_map_["occupancy_log_odds"];
+        grid_map::Matrix& mutable_prob = grid_map_["occupancy_prob"];
+        const grid_map::Matrix& odds = grid_map_["occupancy_log_odds"];
 
-        size_t total_size = grid_data.rows() * grid_data.cols();
+        size_t total_size = odds.rows() * odds.cols();
         for (size_t i = 0; i < total_size; ++i)
         {
-            const float& cell = grid_data.data()[i];
+            const float& cell = odds.data()[i];
 
             if (cell != cell)
             {
-                grid_data_prob.data()[i] = cell;
+                mutable_prob.data()[i] = cell;
             }
             else if (cell < 0.0)
             {
-                grid_data_prob.data()[i] = 0.0;
+                mutable_prob.data()[i] = 0.0;
             }
             else
             {
-                grid_data_prob.data()[i] = 1.0;
+                mutable_prob.data()[i] = 1.0;
             }
         }
 
