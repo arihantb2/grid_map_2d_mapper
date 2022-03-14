@@ -1,10 +1,7 @@
 <?xml version="1.0"?>
 <launch>
-    <!-- Example map_folder: /home/arihant/data/maps -->
-    <!-- Example map_name: exr2-woodside-karratha-loop -->
-
-    <arg name="map_folder" default="NO_MAP_FOLDER"/>
-    <arg name="map_name" default="NO_MAP_NAME"/>
+    <arg name="map_folder" default="MAP_FOLDER_NOT_SET"/>
+    <arg name="map_name" default="MAP_NAME_NOT_SET"/>
 
     <node name="grid_map_nav" type="grid_map_2d_mapper_node" pkg="grid_map_2d_mapper" output="screen">
         <param name="offline_mapping" value="true"/>
