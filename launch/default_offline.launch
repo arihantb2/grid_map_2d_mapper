@@ -1,25 +1,46 @@
 <?xml version="1.0"?>
 <launch>
-    <arg name="map_folder" default="MAP_FOLDER_NOT_SET"/>
+    <arg name="loc_map_folder" default="LOC_MAP_FOLDER_NOT_SET"/>
+    <arg name="nav_map_folder" default="NAV_MAP_FOLDER_NOT_SET"/>
     <arg name="map_name" default="MAP_NAME_NOT_SET"/>
 
-    <node name="grid_map_nav" type="grid_map_2d_mapper_node" pkg="grid_map_2d_mapper" output="screen">
+    <arg name="node_name" default="nav_grid_mapper"/>
+    <arg name="op_radius" default="3.0"/>
+
+    <node name="$(arg node_name)" type="grid_map_2d_mapper_node" pkg="grid_map_2d_mapper" output="screen">
         <param name="offline_mapping" value="true"/>
 
-        <param name="map_folder" value="$(arg map_folder)"/>
+        <param name="map_folder" value="$(arg loc_map_folder)"/>
         <param name="map_name" value="$(arg map_name)"/>
 
         <param name="min_height" value="0.2"/>
         <param name="max_height" value="1.5"/>
-        <param name="angle_min" value="-3.14"/>
-        <param name="angle_max" value="3.14"/>
+        <param name="angle_min" value="-2.1"/>
+        <param name="angle_max" value="2.1"/>
         <param name="angle_increment" value="0.008"/>
         <param name="range_min" value="0.2"/>
         <param name="range_max" value="100.0"/>
         <param name="use_inf" value="false"/>
         <param name="target_frame" value="base_link"/>
-        <param name="op_zone_radius_m" value="3.0"/>
-        <param name="op_zone_step_size_m" value="0.1"/>
+        <param name="op_zone_radius_m" value="$(arg op_radius)"/>
         <param name="loop_duration_ms" value="0.0"/>
     </node>
+
+    <node pkg="map_server"
+          type="map_saver"
+          name="occ_map_saver"
+          args="-f $(arg nav_map_folder)/$(arg map_name)_occ_map map:=/$(arg node_name)/offline/map"
+          output="screen"/>
+
+    <node pkg="map_server"
+          type="map_saver"
+          name="op_zone_map_saver"
+          args="-f $(arg nav_map_folder)/$(arg map_name)_op_zone_map map:=/$(arg node_name)/offline/op_zone_map"
+          output="screen"/>
+
+    <node pkg="map_server"
+          type="map_saver"
+          name="nav_map_saver"
+          args="-f $(arg nav_map_folder)/$(arg map_name)_nav_map map:=/$(arg node_name)/offline/nav_map"
+          output="screen"/>
 </launch>

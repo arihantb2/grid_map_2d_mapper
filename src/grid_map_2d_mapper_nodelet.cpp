@@ -83,6 +83,9 @@ void GridMap2DMapperNodelet::onInit()
     private_nh_.param<double>("range_max", range_max_, 15.0);
     private_nh_.param<bool>("no_mapping", no_mapping_, false);
 
+    double prob_free = private_nh_.param<double>("prob_free", 0.4);
+    double prob_occ = private_nh_.param<double>("prob_occ", 0.6);
+
     int concurrency_level;
     private_nh_.param<int>("concurrency_level", concurrency_level, 1);
     private_nh_.param<bool>("use_inf", use_inf_, true);
@@ -96,8 +99,8 @@ void GridMap2DMapperNodelet::onInit()
     grid_map_.setGeometry(grid_map::Length(2.0, 2.0), 0.05);
     grid_map_.setFrameId(map_frame_);
 
-    log_odds_free_ = probToLogOdds(0.4);
-    log_odds_occ_ = probToLogOdds(0.75);
+    log_odds_free_ = probToLogOdds(prob_free);
+    log_odds_occ_ = probToLogOdds(prob_occ);
 
     min_log_odds_ = log_odds_free_ * 20;
     max_log_odds_ = log_odds_occ_ * 20;
@@ -118,7 +121,7 @@ void GridMap2DMapperNodelet::onInit()
         const std::string map_name = private_nh_.param<std::string>("map_name", "MAP_NAME_NOT_SET");
         const double loop_duration_ms = private_nh_.param<double>("loop_duration_ms", 100.0);
         const double radius = private_nh_.param<double>("op_zone_radius_m", 2.0);
-        const double step_size = private_nh_.param<double>("op_zone_step_size_m", 0.2);
+        // const double step_size = private_nh_.param<double>("op_zone_step_size_m", 0.2);
 
         // Publisher for occupancy grid
         ros::Publisher offline_map_pub = private_nh_.advertise<nav_msgs::OccupancyGrid>("offline/map", 1, true);
@@ -280,15 +283,15 @@ void GridMap2DMapperNodelet::onInit()
             size_t grid_size = prob_grid.rows() * prob_grid.cols();
             for (size_t i = 0; i < grid_size; ++i)
             {
-                if (std::isnan(prob_grid.data()[i]))
+                if (std::isnan(op_zone_grid.data()[i]))
                 {
                     mutable_nav_grid.data()[i] = 1.0;
                     continue;
                 }
 
-                if (std::isnan(op_zone_grid.data()[i]))
+                if (std::isnan(prob_grid.data()[i]))
                 {
-                    mutable_nav_grid.data()[i] = 1.0;
+                    mutable_nav_grid.data()[i] = 0.0;
                     continue;
                 }
 
